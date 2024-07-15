@@ -1,20 +1,15 @@
 package service
 
 import (
-	"github.com/ruziba3vich/to-do-with-mongo/internal/models"
 	"github.com/ruziba3vich/to-do-with-mongo/internal/storage"
 )
 
 type Service struct {
-	storage *storage.Storage
+	storage *storage.TasksStorage
 }
 
-func New(storage *storage.Storage) *Service {
+func New(storage *storage.TasksStorage) *Service {
 	return &Service{
 		storage: storage,
 	}
-}
-
-func (s *Service) CreateTask(task *models.Task) (*models.Task, error) {
-	return s.storage.CreateTask(task)
 }

@@ -13,31 +13,46 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-type Storage struct {
-	db      *mongo.Client
-	logger  *log.Logger
-	redisDb *redis.Client
+type TasksStorage struct {
+	db              *mongo.Client
+	logger          *log.Logger
+	redisDb         *redis.Client
+	tasksCollection *mongo.Collection
+	usersCollection *mongo.Collection
 }
 
-func New(db *mongo.Client, logger *log.Logger, redisDb *redis.Client) *Storage {
-	return &Storage{
-		db:      db,
-		logger:  logger,
-		redisDb: redisDb,
+func NewTasksStorage(
+	db *mongo.Client,
+	logger *log.Logger,
+	redisDb *redis.Client,
+	tasksCollection *mongo.Collection,
+	usersCollection *mongo.Collection,
+) *TasksStorage {
+	return &TasksStorage{
+		db:              db,
+		logger:          logger,
+		redisDb:         redisDb,
+		tasksCollection: tasksCollection,
+		usersCollection: usersCollection,
 	}
 }
 
-func (s *Storage) CreateTask(ctx context.Context, task *models.Task) (*models.Task, error) {
+func (s *TasksStorage) CreateTask(ctx context.Context, task *models.Task) (*models.Task, error) {
 	task.Id = primitive.NewObjectID()
-	task.CreatedAt = time.Now()
-	collection := s.db.Database(task.GetDbName()).Collection(task.GetCollectionName())
 
-	_, err := collection.InsertOne(ctx, task)
+	_, err := s.tasksCollection.InsertOne(ctx, task)
 	if err != nil {
 		s.logger.Println(err)
 		return nil, err
 	}
-	stat := s.redisDb.Set(ctx, task.Id.String(), task, time.Hour*24)
+
+	hashedTask, err := json.Marshal(task)
+	if err != nil {
+		s.logger.Println("error while marshaling task :", err.Error())
+		return nil, err
+	}
+
+	stat := s.redisDb.Set(ctx, task.Id.String(), hashedTask, time.Hour*24)
 	if err := stat.Err(); err != nil {
 		s.logger.Println(err)
 		return nil, err
@@ -45,7 +60,9 @@ func (s *Storage) CreateTask(ctx context.Context, task *models.Task) (*models.Ta
 	return task, nil
 }
 
-func (s *Storage) GetTaskById(ctx context.Context, taskId string) (*models.Task, error) {
+/// PRODONiK ---------------------------------- 😎😎😎 ---------------------------------- ///
+
+func (s *TasksStorage) GetTaskById(ctx context.Context, taskId string) (*models.Task, error) {
 	var response models.Task
 	result, err := s.redisDb.Get(ctx, taskId).Result()
 	if err != nil {
@@ -56,11 +73,9 @@ func (s *Storage) GetTaskById(ctx context.Context, taskId string) (*models.Task,
 				return nil, err
 			}
 
-			collection := s.db.Database(response.GetDbName()).Collection(response.GetCollectionName())
-
 			filter := bson.M{"_id": docId}
 
-			if err := collection.FindOne(ctx, filter).Decode(&response); err != nil {
+			if err := s.tasksCollection.FindOne(ctx, filter).Decode(&response); err != nil {
 				if err == mongo.ErrNoDocuments {
 					s.logger.Println("no data found in the database :", err.Error())
 				} else {
@@ -68,7 +83,17 @@ func (s *Storage) GetTaskById(ctx context.Context, taskId string) (*models.Task,
 				}
 				return nil, err
 			}
-			s.redisDb.Set(ctx, taskId, response, time.Hour*24)
+
+			hashedTask, err := json.Marshal(response)
+			if err != nil {
+				s.logger.Println("could not marshal the response data :", err.Error())
+				return nil, err
+			}
+
+			if err := s.redisDb.Set(ctx, taskId, hashedTask, time.Hour*24).Err(); err != nil {
+				s.logger.Println("could not cache the data :", err.Error())
+				return nil, err
+			}
 		} else {
 			s.logger.Println("error while fetching object from redis :", err.Error())
 			return nil, err
@@ -79,4 +104,88 @@ func (s *Storage) GetTaskById(ctx context.Context, taskId string) (*models.Task,
 		return nil, err
 	}
 	return &response, err
+}
+
+func (s *TasksStorage) GetTaskByUser(ctx context.Context, user *models.User) (*models.RepeatedModelsResponse, error) {
+	filter := bson.M{
+		"assigned_to": bson.M{
+			"$all": []string{user.Fullname, user.Email},
+		},
+	}
+
+	cursor, err := s.tasksCollection.Find(ctx, filter)
+	if err != nil {
+		s.logger.Println("error while fetching data from db :", err.Error())
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var response models.RepeatedModelsResponse
+
+	for cursor.Next(ctx) {
+		var responsecha models.Task
+		if err := cursor.Decode(&responsecha); err != nil {
+			s.logger.Println("error while decoding data")
+			return nil, err
+		}
+		response.Tasks = append(response.Tasks, &responsecha)
+	}
+
+	if err := cursor.Err(); err != nil {
+		s.logger.Println("error fetched from the cursor :", err.Error())
+		return nil, err
+	}
+	return &response, nil
+}
+
+func (s *TasksStorage) UpdateTaskStatus(ctx context.Context, req *models.UpdateTaskStatusRequest) (*models.Task, error) {
+	task, err := s.GetTaskById(ctx, req.TaskId)
+	if err != nil {
+		s.logger.Println("task not found :", err.Error())
+		return nil, err
+	}
+	task.Status = models.Status(req.TaskId)
+	hashedTask, err := json.Marshal(task)
+	if err != nil {
+		s.logger.Println("error while marshaling data :", err.Error())
+		return nil, err
+	}
+	stat := s.redisDb.Set(ctx, req.TaskId, hashedTask, time.Hour*24)
+	if err := stat.Err(); err != nil {
+		s.logger.Println("error while caching the data in redis :", err.Error())
+		return nil, err
+	}
+	return task, nil
+}
+
+func (s *TasksStorage) GetIncompleteTasksUntillDate(ctx context.Context, req *models.GetIncompleteTasksUntillDateRequest) (*models.RepeatedModelsResponse, error) {
+	filter := bson.M{
+		"sub_tasks": bson.M{
+			"$elemMatch": bson.M{"status": models.Pending},
+		},
+	}
+
+	cursor, err := s.tasksCollection.Find(ctx, filter)
+	if err != nil {
+		s.logger.Println("error while fetching data from collection :", err.Error())
+		return nil, err
+	}
+
+	defer cursor.Close(ctx)
+
+	var response models.RepeatedModelsResponse
+	for cursor.Next(ctx) {
+		var responsecha models.Task
+		if err := cursor.Decode(&responsecha); err != nil {
+			s.logger.Println("error while decoding data :", err.Error())
+			return nil, err
+		}
+		response.Tasks = append(response.Tasks, &responsecha)
+	}
+
+	if err := cursor.Err(); err != nil {
+		s.logger.Println("error fetched from the cursor :", err.Error())
+		return nil, err
+	}
+	return &response, nil
 }
