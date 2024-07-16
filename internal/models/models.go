@@ -19,7 +19,7 @@ type (
 		Status      Status             `json:"status,omitempty"`
 		AssignedTo  []string           `json:"assigned_to,omitempty"`
 		DueDate     primitive.DateTime `json:"due_date,omitempty"`
-		SubTasks    []SubTask          `json:"sub_tasks,omitempty"`
+		SubTasks    []*SubTask         `json:"sub_tasks,omitempty"`
 	}
 
 	User struct {
@@ -33,12 +33,32 @@ type (
 		TaskStatus string `json:"task_status"`
 	}
 
-	GetIncompleteTasksUntillDateRequest struct {
-		Date primitive.DateTime
-	}
+	// GetIncompleteSubTasksRequest struct {
+	// 	Date primitive.DateTime
+	// }
 
 	RepeatedModelsResponse struct {
 		Tasks []*Task
+	}
+
+	GetTasksUntilDateRequest struct {
+		Date primitive.DateTime
+	}
+
+	UpdateSubTaskStatusRequest struct {
+		TaskId       string `json:"task_id"`
+		SubTaskIndex int    `json:"subtask_index"`
+		NewStatus    Status `json:"new_status"`
+	}
+
+	AddNewSubTaskIntoTaskRequest struct {
+		TaskId  string  `json:"task_id"`
+		SubTask SubTask `json:"sub_task"`
+	}
+
+	ChangeTaskUserRequest struct {
+		TaskId           string   `json:"task_id"`
+		NewTaskOwnerData []string `json:"new_task_owner_data"`
 	}
 )
 
